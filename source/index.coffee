@@ -1,5 +1,4 @@
 _           = require 'lodash'
-async       = require 'async'
 Busboy      = require 'busboy'
 DataSource  = require('loopback-datasource-juggler').DataSource
 debug       = require('debug') 'loopback:storage:mongo'
@@ -41,7 +40,7 @@ class MongoStorage
   getContainers: (callback) ->
     @db.collection 'fs.files'
     .find
-      'metadata.mongo-storage': true
+        'metadata.mongo-storage': true
     .toArray (err, files) ->
       return callback err if err
       list = _(files)
@@ -57,8 +56,8 @@ class MongoStorage
   getContainer: (name, callback) ->
     @db.collection 'fs.files'
     .find
-      'metadata.mongo-storage': true
-      'metadata.container': name
+        'metadata.mongo-storage': true
+        'metadata.container': name
     .toArray (err, files) ->
       return callback err if err
       callback null,
@@ -66,11 +65,10 @@ class MongoStorage
         files: files
 
   destroyContainer: (name, callback) ->
-    self = @
-    self.getFiles name, (err, files) ->
-      return callback err if err
-      async.each files, (file, done) ->
-        self.removeFileById file._id, done
+    @db.collection 'fs.files'
+    .remove
+        'metadata.mongo-storage': true
+        'metadata.container': name
       , callback
 
   upload: (container, req, res, callback) ->
@@ -109,49 +107,64 @@ class MongoStorage
   getFiles: (container, callback) ->
     @db.collection 'fs.files'
     .find
-      'metadata.mongo-storage': true
-      'metadata.container': container
-    , (err, files) ->
-      return callback err, files
-  
-  removeFile: (container, filename, callback) ->
-    self = @
-    self.getFile container, filename, (err, file) ->
-      return callback err if err
-      self.removeFileById file._id, callback
+        'metadata.mongo-storage': true
+        'metadata.container': container
+      , (err, files) ->
+        return callback err, files
 
-  removeFileById: (id, callback) ->
-    self = @
-    async.parallel [
-      (done) ->
-        self.db.collection 'fs.chunks'
-        .remove
-          files_id: id
-        , done
-      (done) ->
-        self.db.collection 'fs.files'
-        .remove
-          _id: id
-        , done
-    ], callback
+  removeFile: (container, filename, callback) ->
+    @db.collection 'fs.files'
+    .remove
+        'metadata.mongo-storage': true
+        'metadata.container': container
+        'metadata.filename': filename
+      , (err) ->
+        return callback err
 
   getFile: (container, filename, callback) ->
     @db.collection 'fs.files'
     .findOne
-      'metadata.mongo-storage': true
-      'metadata.container': container
-      'metadata.filename': filename
-    , (err, file) ->
-      return callback err if err
-      if not file
-        err = new Error 'File not found'
-        err.status = 404
-        return callback err
-      callback null, file
+        'metadata.mongo-storage': true
+        'metadata.container': container
+        'metadata.filename': filename
+      , (err, file) ->
+        return callback err if err
+        if not file
+          err = new Error 'File not found'
+          err.status = 404
+          return callback err
+        callback null, file
 
   download: (container, filename, res, callback = (-> return)) ->
     self = @
     @getFile container, filename, (err, file) ->
+      return callback err if err
+      gfs = Grid self.db, mongodb
+      read = gfs.createReadStream
+        _id: file._id
+      res.set 'Content-Disposition', "attachment; filename=\"#{file.filename}\""
+      res.set 'Content-Type', file.metadata.mimetype
+      res.set 'Content-Length', file.length
+      read.pipe res
+
+
+  getFileById: (container, fileId, callback) ->
+    @db.collection 'fs.files'
+    .findOne
+        'metadata.mongo-storage': true
+        'metadata.container': container
+        '_id': new ObjectID(fileId)
+      , (err, file) ->
+        return callback err if err
+        if not file
+          err = new Error 'File not found'
+          err.status = 404
+          return callback err
+        callback null, file
+
+  downloadFileById: (container, fileId, res, callback = (-> return)) ->
+    self = @
+    @getFileById container, fileId, (err, file) ->
       return callback err if err
       gfs = Grid self.db, mongodb
       read = gfs.createReadStream
@@ -217,6 +230,14 @@ MongoStorage.prototype.download.accepts = [
   {arg: 'res', type: 'object', http: {source: 'res'}}
 ]
 MongoStorage.prototype.download.http = {verb: 'get', path: '/:container/download/:file'}
+
+MongoStorage.prototype.downloadFileById.shared = true
+MongoStorage.prototype.downloadFileById.accepts = [
+  {arg: 'container', type: 'string'}
+  {arg: 'id', type: 'string'}
+  {arg: 'res', type: 'object', http: {source: 'res'}}
+]
+MongoStorage.prototype.downloadFileById.http = {verb: 'get', path: '/:container/downloadById/:id'}
 
 exports.initialize = (dataSource, callback) ->
   settings = dataSource.settings or {}
