@@ -169,7 +169,6 @@ class MongoStorage
       gfs = Grid self.db, mongodb
       read = gfs.createReadStream
         _id: file._id
-      res.set 'Content-Disposition', "attachment; filename=\"#{file.filename}\""
       res.set 'Content-Type', file.metadata.mimetype
       res.set 'Content-Length', file.length
       read.pipe res
